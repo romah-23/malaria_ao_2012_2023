@@ -1,0 +1,2035 @@
+# Manuscript: Malaria in the Western Amazon: A Decade of Temporal, Sociodemographic, and Hospitalization Cost Analysis
+
+# Load necessary packages
+library(readxl)
+library(dplyr)
+library(prais)
+library(ggplot2)
+library(tidyr)
+library(scales)
+library(geobr)
+library(sf)
+
+================================================================================
+- PREVALENCE
+
+# 1. Regional analysis (Acre, Amazonas, Rondônia, Roraima, and Western Amazon)
+
+# Load Excel file - REGIONAL PREVALENCE
+df_prevalence_reg <- read_excel("prevalence_1_regional_z2.xlsx")
+
+# Transform case units to a logarithmic scale
+df_prevalence_reg <- df_prevalence_reg %>%
+  mutate(ac_log = log(ac),
+         am_log = log(am),
+         ro_log = log(ro),
+         rr_log = log(rr),
+         ao_log = log(ao))
+
+# Apply Prais-Winsten regression
+pw_prevalence_ac <- prais_winsten(ac_log ~ ano, data = df_prevalence_reg, index = "ano")
+pw_prevalence_am <- prais_winsten(am_log ~ ano, data = df_prevalence_reg, index = "ano")
+pw_prevalence_ro <- prais_winsten(ro_log ~ ano, data = df_prevalencia_reg, index = "ano")
+pw_prevalence_rr <- prais_winsten(rr_log ~ ano, data = df_prevalence_reg, index = "ano")
+pw_prevalence_ao <- prais_winsten(ao_log ~ ano, data = df_prevalence_reg, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_prevalence_reg <- df_prevalence_reg %>%
+  mutate(predicted_ac = exp(pw_prevalence_ac$fitted.values) - 2,
+         predicted_am = exp(pw_prevalence_am$fitted.values) - 2,
+         predicted_ro = exp(pw_prevalence_ro$fitted.values) - 2,
+         predicted_rr = exp(pw_prevalence_rr$fitted.values) - 2,
+         predicted_ao = exp(pw_prevalence_ao$fitted.values) - 2,
+         # CREATE UNIQUE NAME FOR FINAL COMPOSITE PLOT
+         predicted_ao_prevalence = predicted_ao)
+
+# Create a list to store results
+results_prevalence_reg <- list()
+
+# Names of regions
+regions_prevalence <- c("ac", "am", "ro", "rr", "ao")
+
+# Calculate beta, standard error, and p-value for each region
+for (region in regions_prevalence) {
+  model <- get(paste0("pw_prevalence_", region))
+  results_prevalence_reg[[region]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each region using beta coefficients
+apc_prevalence_region <- list()
+
+for (region in names(results_prevalence_reg)) {
+  beta <- results_prevalence_reg[[region]]$beta
+  apc_prevalence_region[[region]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_prevalence_reg <- list()
+
+# Calculate upper and lower 95% CI for each region
+for (region in names(results_prevalence_reg)) {
+  beta <- results_prevalence_reg[[region]]$beta
+  std_error <- results_prevalence_reg[[region]]$std_error
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  IC95_prevalencia_reg[[region]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each region
+R2_prevalence_reg <- data.frame(
+  r2_ac = calculate_r_squared(df_prevalence_reg$ac, df_prevalence_reg$predicted_ac),
+  r2_am = calculate_r_squared(df_prevalence_reg$am, df_prevalence_reg$predicted_am),
+  r2_ro = calculate_r_squared(df_prevalence_reg$ro, df_prevalence_reg$predicted_ro),
+  r2_rr = calculate_r_squared(df_prevalence_reg$rr, df_prevalence_reg$predicted_rr),
+  r2_ao = calculate_r_squared(df_prevalence_reg$ao, df_prevalence_reg$predicted_ao)
+)
+
+# Results Table - Regional
+
+# Category names for table display
+table_categories_prevalence_reg <- c("Acre", "Amazonas", "Rondônia", "Roraima", "Western Amazon")
+
+# Extract APC values
+table_apcs_prevalence_reg <- unlist(apc_prevalence_region)
+
+# Extract p-values (numeric)
+table_p_values_prevalence_reg_numeric <- sapply(results_prevalence_reg, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_prevalence_reg_formatted <- character(length(table_categories_prevalence_reg))
+
+for (i in seq_along(table_categories_prevalence_reg)) {
+  p_val <- table_p_values_prevalence_reg_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_prevalence_reg_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_prevalence_reg_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_prevalence_reg_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_prevalence_reg_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_prevalence_reg_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_prevalence_regional <- data.frame(
+  Category = table_categories_prevalence_reg,
+  APC = table_apcs_prevalence_reg,
+  `p-value` = table_p_values_prevalence_reg_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_prevalence_regional$APC <- round(table_prevalence_regional$APC, 2)
+
+# Print the table
+print(table_prevalence_regional)
+
+================================================================================
+# 2. Sex analysis (female, male, and Western Amazon)
+
+# Load Excel file (adjust path to your file)
+df_sex <- read_excel("prevalence_2_sexo_z2.xlsx")
+
+# Transform case units to a logarithmic scale
+df_sex <- df_sex %>%
+  mutate(male_log = log(m),
+         female_log = log(f),
+         ao_sex_log = log(ao_sex))
+
+# Apply Prais-Winsten regression
+pw_prevalence_male <- prais_winsten(male_log ~ ano, data = df_sex, index = "ano")
+pw_prevalence_female <- prais_winsten(female_log ~ ano, data = df_sex, index = "ano")
+pw_prevalence_ao_sex <- prais_winsten(ao_sex_log ~ ano, data = df_sex, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_sex <- df_sex %>%
+  mutate(predicted_male = exp(pw_prevalence_male$fitted.values) - 2,
+         predicted_female = exp(pw_prevalence_female$fitted.values) - 2,
+         predicted_ao_sex = exp(pw_prevalence_ao_sex$fitted.values) - 2)
+
+# Create a list to store results
+results_sex <- list()
+
+# Names of sexes
+sexes <- c("male", "female", "ao_sex")
+
+# Calculate beta, standard error, and p-value for each sex
+for (sex in sexes) {
+  # ATTENTION: Accessing the pw_ object with the new naming convention pw_prevalence_
+  model <- get(paste0("pw_prevalence_", sex))
+  results_sex[[sex]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each sex using beta coefficients
+apc_sex <- list()
+
+for (sex in names(results_sex)) {
+  beta <- results_sex[[sex]]$beta
+  apc_sex[[sex]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_sex <- list()
+
+# Calculate upper and lower 95% CI for each sex
+for (sex in names(results_sex)) {
+  beta <- results_sex[[sex]]$beta
+  std_error <- results_sex[[sex]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_sex[[sex]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function
+R2_sex <- data.frame(
+  r2_male = calculate_r_squared(df_sex$m, df_sex$predicted_male),
+  r2_female = calculate_r_squared(df_sex$f, df_sex$predicted_female),
+  r2_ao_sex = calculate_r_squared(df_sex$ao_sex, df_sex$predicted_ao_sex)
+)
+
+# Results Table - Sex
+
+# Category names
+sex_categories <- names(apc_sex)
+
+# Extract APC values
+apcs_sex <- unlist(apc_sex)
+
+# Extract p-values (numeric)
+p_values_sex_numeric <- sapply(results_sex, function(x) x$p_value)
+
+# Format p-values as strings
+p_values_sex_formatted <- character(length(sex_categories))
+
+for (i in seq_along(sex_categories)) {
+  p_val <- p_values_sex_numeric[i]
+  
+  if (is.na(p_val)) {
+    p_values_sex_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    p_values_sex_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    p_values_sex_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    p_values_sex_formatted[i] <- "<0.05"
+  } else {
+    p_values_sex_formatted[i] <- ">0.05"
+  }
+}
+
+# User-friendly labels for categories
+labels_sex <- c("Male", "Female", "Western Amazon (Sex)")
+
+# Create the dataframe
+table_sex_prevalence <- data.frame(
+  Category = labels_sex,
+  APC = apcs_sex,
+  `p-value` = p_values_sex_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_sex_prevalence$APC <- round(table_sex_prevalence$APC, 2)
+
+# Print the table
+print(table_sex_prevalence)
+
+==============================================================================
+# 3. Age group analysis [f1(0-9), f2(10-19), f3(20-29), f4(30-39), f5(40-49)
+# f6(50-59), f7(60-60+) and Western Amazon]
+
+# Load Excel file (adjust path to your file)
+df_age <- read_excel("prevalence_3_faixa_z2.xlsx")
+
+# Transform case units to a logarithmic scale
+df_age <- df_age %>%
+  mutate(f1_log = log(f1),
+         f2_log = log(f2),
+         f3_log = log(f3),
+         f4_log = log(f4),
+         f5_log = log(f5),
+         f6_log = log(f6),
+         f7_log = log(f7),
+         ao_age_log = log(ao_faixa))
+
+# Apply Prais-Winsten regression
+pw_f1 <- prais_winsten(f1_log ~ ano, data = df_age, index = "ano")
+pw_f2 <- prais_winsten(f2_log ~ ano, data = df_age, index = "ano")
+pw_f3 <- prais_winsten(f3_log ~ ano, data = df_age, index = "ano")
+pw_f4 <- prais_winsten(f4_log ~ ano, data = df_age, index = "ano")
+pw_f5 <- prais_winsten(f5_log ~ ano, data = df_age, index = "ano")
+pw_f6 <- prais_winsten(f6_log ~ ano, data = df_age, index = "ano")
+pw_f7 <- prais_winsten(f7_log ~ ano, data = df_age, index = "ano")
+pw_ao_age <- prais_winsten(ao_age_log ~ ano, data = df_age, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_age <- df_age %>%
+  mutate(predicted_f1 = exp(pw_f1$fitted.values) - 2,
+         predicted_f2 = exp(pw_f2$fitted.values) - 2,
+         predicted_f3 = exp(pw_f3$fitted.values) - 2,
+         predicted_f4 = exp(pw_f4$fitted.values) - 2,
+         predicted_f5 = exp(pw_f5$fitted.values) - 2,
+         predicted_f6 = exp(pw_f6$fitted.values) - 2,
+         predicted_f7 = exp(pw_f7$fitted.values) - 2,
+         predicted_ao_age = exp(pw_ao_age$fitted.values) - 2)
+
+# Create a list to store results
+results_age <- list()
+
+# Names of age groups
+age_groups <- c("f1", "f2", "f3", "f4", "f5", "f6", "f7", "ao_age")
+
+# Calculate beta, standard error, and p-value for each age group
+for (age_group in age_groups) {
+  model <- get(paste0("pw_", age_group))
+  results_age[[age_group]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each age group using beta coefficients
+apc_age <- list()
+
+for (age_group in names(results_age)) {
+  beta <- results_age[[age_group]]$beta
+  apc_age[[age_group]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_age <- list()
+
+# Calculate upper and lower 95% CI for each age group
+for (age_group in names(results_age)) {
+  beta <- results_age[[age_group]]$beta
+  std_error <- results_age[[age_group]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_age[[age_group]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each age group
+R2_age <- data.frame(
+  r2_f1 = calculate_r_squared(df_age$f1, df_age$predicted_f1),
+  r2_f2 = calculate_r_squared(df_age$f2, df_age$predicted_f2),
+  r2_f3 = calculate_r_squared(df_age$f3, df_age$predicted_f3),
+  r2_f4 = calculate_r_squared(df_age$f4, df_age$predicted_f4),
+  r2_f5 = calculate_r_squared(df_age$f5, df_age$predicted_f5),
+  r2_f6 = calculate_r_squared(df_age$f6, df_age$predicted_f6),
+  r2_f7 = calculate_r_squared(df_age$f7, df_age$predicted_f7),
+  r2_ao_age = calculate_r_squared(df_age$ao_faixa, df_age$predicted_ao_age)
+)
+
+# Results Table - Age Group
+
+# Category names for table display
+labels_age <- c("0-9 years", "10-19 years", "20-29 years", "30-39 years",
+                  "40-49 years", "50-59 years", "60+ years", "Western Amazon (Age Group)")
+
+# Names of internal categories (from the list)
+age_group_categories <- names(apc_age)
+
+# Extract APC values
+apcs_age <- unlist(apc_age)
+
+# Extract p-values (numeric)
+p_values_age_numeric <- sapply(results_age, function(x) x$p_value)
+
+# Format p-values as strings
+p_values_age_formatted <- character(length(age_group_categories))
+
+for (i in seq_along(age_group_categories)) {
+  p_val <- p_values_age_numeric[i]
+  
+  if (is.na(p_val)) {
+    p_values_age_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    p_values_age_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    p_values_age_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    p_values_age_formatted[i] <- "<0.05"
+  } else {
+    p_values_age_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_age_prevalence <- data.frame(
+  Category = labels_age,
+  APC = apcs_age,
+  `p-value` = p_values_age_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_age_prevalence$APC <- round(table_age_prevalence$APC, 2)
+
+# Print the table
+print(table_age_prevalence)
+
+==============================================================================
+# 4. Color/Race analysis (White, Black, Yellow, Brown, Indigenous, and Western Amazon)
+
+# Load Excel file (adjust path to your file)
+df_color <- read_excel("prevalence_4_cor_z2.xlsx")
+
+# Transform case units to a logarithmic scale
+df_color <- df_color %>%
+  mutate(white_log = log(branca),
+         black_log = log(preta),
+         yellow_log = log(amarela),
+         brown_log = log(parda),
+         indigenous_log = log(indigena),
+         ao_color_log = log(ao_cor))
+
+# Apply Prais-Winsten regression
+pw_white <- prais_winsten(white_log ~ ano, data = df_color, index = "ano")
+pw_black <- prais_winsten(black_log ~ ano, data = df_color, index = "ano")
+pw_yellow <- prais_winsten(yellow_log ~ ano, data = df_color, index = "ano")
+pw_brown <- prais_winsten(brown_log ~ ano, data = df_color, index = "ano")
+pw_indigenous <- prais_winsten(indigenous_log ~ ano, data = df_color, index = "ano")
+pw_ao_color <- prais_winsten(ao_color_log ~ ano, data = df_color, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_color <- df_color %>%
+  mutate(predicted_white = exp(pw_white$fitted.values) - 2,
+         predicted_black = exp(pw_black$fitted.values) - 2,
+         predicted_yellow = exp(pw_yellow$fitted.values) - 2,
+         predicted_brown = exp(pw_brown$fitted.values) - 2,
+         predicted_indigenous = exp(pw_indigenous$fitted.values) - 2,
+         predicted_ao_color = exp(pw_ao_color$fitted.values) - 2)
+
+# Create a list to store results
+results_color <- list()
+
+# Names of colors/races
+colors <- c("white", "black", "yellow", "brown", "indigenous", "ao_color")
+
+# Calculate beta, standard error, and p-value for each color/race
+for (color in colors) {
+  model <- get(paste0("pw_", color))
+  results_color[[color]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each color/race using beta coefficients
+apc_color <- list()
+
+for (color in names(results_color)) {
+  beta <- results_color[[color]]$beta
+  apc_color[[color]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_color <- list()
+
+# Calculate upper and lower 95% CI for each color/race
+for (color in names(results_color)) {
+  beta <- results_color[[color]]$beta
+  std_error <- results_color[[color]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_color[[color]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each color/race
+R2_color <- data.frame(
+  r2_white = calculate_r_squared(df_color$branca, df_color$predicted_white),
+  r2_black = calculate_r_squared(df_color$preta, df_color$predicted_black),
+  r2_yellow = calculate_r_squared(df_color$amarela, df_color$predicted_yellow),
+  r2_brown = calculate_r_squared(df_color$parda, df_color$predicted_brown),
+  r2_indigenous = calculate_r_squared(df_color$indigena, df_color$predicted_indigenous),
+  r2_ao_color = calculate_r_squared(df_color$ao_cor, df_color$predicted_ao_color)
+)
+
+# Results Table - Color
+# Category names for table display
+labels_color <- c("White", "Black", "Yellow", "Brown", "Indigenous", "Western Amazon (Color/Race)")
+
+# Names of internal categories (from the list)
+color_categories <- names(apc_color)
+
+# Extract APC values
+apcs_color <- unlist(apc_color)
+
+# Extract p-values (numeric)
+p_values_color_numeric <- sapply(results_color, function(x) x$p_value)
+
+# Format p-values as strings
+p_values_color_formatted <- character(length(color_categories))
+
+for (i in seq_along(color_categories)) {
+  p_val <- p_values_color_numeric[i]
+  
+  if (is.na(p_val)) {
+    p_values_color_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    p_values_color_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    p_values_color_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    p_values_color_formatted[i] <- "<0.05"
+  } else {
+    p_values_color_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_color_prevalence <- data.frame(
+  Category = labels_color,
+  APC = apcs_color,
+  `p-value` = p_values_color_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_color_prevalence$APC <- round(table_color_prevalence$APC, 2)
+
+# Print the table
+print(table_color_prevalence)
+
+================================================================================
+- HOSPITALIZATION COSTS
+
+# 1. Regional analysis (Acre, Amazonas, Rondônia, Roraima, and Western Amazon)
+
+# Load Excel file - REGIONAL COSTS
+df_costs_reg <- read_excel("costs_1_regional_z2.xlsx")
+
+# Transform cost units to a logarithmic scale
+df_costs_reg <- df_costs_reg %>%
+  mutate(ac_log = log(ac),
+         am_log = log(am),
+         ro_log = log(ro),
+         rr_log = log(rr),
+         ao_log = log(ao))
+
+# Apply Prais-Winsten regression
+pw_costs_ac <- prais_winsten(ac_log ~ ano, data = df_costs_reg, index = "ano")
+pw_costs_am <- prais_winsten(am_log ~ ano, data = df_costs_reg, index = "ano")
+pw_costs_ro <- prais_winsten(ro_log ~ ano, data = df_costs_reg, index = "ano")
+pw_costs_rr <- prais_winsten(rr_log ~ ano, data = df_costs_reg, index = "ano")
+pw_costs_ao <- prais_winsten(ao_log ~ ano, data = df_costs_reg, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_costs_reg <- df_costs_reg %>%
+  mutate(predicted_ac = exp(pw_costs_ac$fitted.values) - 2,
+         predicted_am = exp(pw_costs_am$fitted.values) - 2,
+         predicted_ro = exp(pw_costs_ro$fitted.values) - 2,
+         predicted_rr = exp(pw_costs_rr$fitted.values) - 2,
+         predicted_ao = exp(pw_costs_ao$fitted.values) - 2,
+         # CREATE UNIQUE NAME FOR FINAL COMPOSITE PLOT
+         predicted_ao_costs = predicted_ao)
+
+# Create a list to store results
+results_costs_reg <- list()
+
+# Names of regions
+regions_costs <- c("ac", "am", "ro", "rr", "ao")
+
+# Calculate beta, standard error, and p-value for each region
+for (region in regions_costs) {
+  model <- get(paste0("pw_costs_", region))
+  results_costs_reg[[region]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each region using beta coefficients
+apc_costs_region <- list()
+
+for (region in names(results_costs_reg)) {
+  beta <- results_costs_reg[[region]]$beta
+  apc_costs_region[[region]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_costs_reg <- list()
+
+# Calculate upper and lower 95% CI for each region
+for (region in names(results_costs_reg)) {
+  beta <- results_costs_reg[[region]]$beta
+  std_error <- results_costs_reg[[region]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_costs_reg[[region]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each region
+R2_costs_reg <- data.frame(
+  r2_ac = calculate_r_squared(df_costs_reg$ac, df_costs_reg$predicted_ac),
+  r2_am = calculate_r_squared(df_costs_reg$am, df_costs_reg$predicted_am),
+  r2_ro = calculate_r_squared(df_costs_reg$ro, df_costs_reg$predicted_ro),
+  r2_rr = calculate_r_squared(df_costs_reg$rr, df_costs_reg$predicted_rr),
+  r2_ao = calculate_r_squared(df_costs_reg$ao, df_costs_reg$predicted_ao)
+)
+
+# Results Table for Costs - Regional
+# Category names for table display
+table_categories_costs_reg <- c("Acre", "Amazonas", "Rondônia", "Roraima", "Western Amazon")
+
+# Extract APC values
+table_apcs_costs_reg <- unlist(apc_costs_region)
+
+# Extract p-values (numeric)
+table_p_values_costs_reg_numeric <- sapply(results_costs_reg, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_costs_reg_formatted <- character(length(table_categories_costs_reg))
+
+for (i in seq_along(table_categories_costs_reg)) {
+  p_val <- table_p_values_costs_reg_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_costs_reg_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_costs_reg_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_costs_reg_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_costs_reg_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_costs_reg_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_costs_regional <- data.frame(
+  Category = table_categories_costs_reg,
+  APC = table_apcs_costs_reg,
+  `p-value` = table_p_values_costs_reg_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_costs_regional$APC <- round(table_costs_regional$APC, 2)
+
+# Print the table
+print(table_costs_regional)
+
+================================================================================
+# 2. Sex analysis (female, male, and Western Amazon)
+
+# Load Excel file - COSTS SEX
+df_costs_sex <- read_excel("costs_2_sexo_z2.xlsx")
+
+# Transform cost units to a logarithmic scale
+df_costs_sex <- df_costs_sex %>%
+  mutate(male_log = log(m),
+         female_log = log(f),
+         ao_sex_log = log(ao_sex))
+
+# Apply Prais-Winsten regression
+pw_costs_male <- prais_winsten(male_log ~ ano, data = df_costs_sex, index = "ano")
+pw_costs_female <- prais_winsten(female_log ~ ano, data = df_costs_sex, index = "ano")
+pw_costs_ao_sex <- prais_winsten(ao_sex_log ~ ano, data = df_costs_sex, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_costs_sex <- df_costs_sex %>%
+  mutate(predicted_male = exp(pw_costs_male$fitted.values) - 2,
+         predicted_female = exp(pw_costs_female$fitted.values) - 2,
+         predicted_ao_sex = exp(pw_costs_ao_sex$fitted.values) - 2)
+
+# Create a list to store results
+results_costs_sex <- list()
+
+# Names of sexes
+sexes_costs <- c("male", "female", "ao_sex")
+
+# Calculate beta, standard error, and p-value for each sex
+for (sex in sexes_costs) {
+  model <- get(paste0("pw_costs_", sex))
+  results_costs_sex[[sex]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each sex using beta coefficients
+apc_costs_sex <- list()
+
+for (sex in names(results_costs_sex)) {
+  beta <- results_costs_sex[[sex]]$beta
+  apc_costs_sex[[sex]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_costs_sex <- list()
+
+# Calculate upper and lower 95% CI for each sex
+for (sex in names(results_costs_sex)) {
+  beta <- results_costs_sex[[sex]]$beta
+  std_error <- results_costs_sex[[sex]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_costs_sex[[sex]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each sex
+R2_costs_sex <- data.frame(
+  r2_male = calculate_r_squared(df_costs_sex$m, df_costs_sex$predicted_male),
+  r2_female = calculate_r_squared(df_costs_sex$f, df_costs_sex$predicted_female),
+  r2_ao_sex = calculate_r_squared(df_costs_sex$ao_sex, df_costs_sex$predicted_ao_sex)
+)
+
+# Results Table for Costs - Sex
+# Category names for table display
+table_categories_costs_sex <- c("Male", "Female", "Western Amazon (Sex)")
+
+# Extract APC values
+table_apcs_costs_sex <- unlist(apc_costs_sex)
+
+# Extract p-values (numeric)
+table_p_values_costs_sex_numeric <- sapply(results_costs_sex, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_costs_sex_formatted <- character(length(table_categories_costs_sex))
+
+for (i in seq_along(table_categories_costs_sex)) {
+  p_val <- table_p_values_costs_sex_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_costs_sex_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_costs_sex_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_costs_sex_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_costs_sex_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_costs_sex_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_costs_sex <- data.frame(
+  Category = table_categories_costs_sex,
+  APC = table_apcs_costs_sex,
+  `p-value` = table_p_values_costs_sex_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_costs_sex$APC <- round(table_costs_sex$APC, 2)
+
+# Print the table
+print(table_costs_sex)
+
+==============================================================================
+# 3. Age group analysis [f1(0-9), f2(10-19), f3(20-29), f4(30-39), f5(40-49)
+# f6(50-59), f7(60-60+) and Western Amazon]
+
+# Load Excel file - AGE GROUP COSTS
+df_costs_age <- read_excel("costs_3_faixa_z2.xlsx")
+
+# Transform cost units to a logarithmic scale
+df_costs_age <- df_costs_age %>%
+  mutate(f1_log = log(f1),
+         f2_log = log(f2),
+         f3_log = log(f3),
+         f4_log = log(f4),
+         f5_log = log(f5),
+         f6_log = log(f6),
+         f7_log = log(f7),
+         ao_age_log = log(ao_faixa))
+
+# Apply Prais-Winsten regression
+pw_costs_f1 <- prais_winsten(f1_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_f2 <- prais_winsten(f2_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_f3 <- prais_winsten(f3_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_f4 <- prais_winsten(f4_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_f5 <- prais_winsten(f5_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_f6 <- prais_winsten(f6_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_f7 <- prais_winsten(f7_log ~ ano, data = df_costs_age, index = "ano")
+pw_costs_ao_age <- prais_winsten(ao_age_log ~ ano, data = df_costs_age, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_costs_age <- df_costs_age %>%
+  mutate(predicted_f1 = exp(pw_costs_f1$fitted.values) - 2,
+         predicted_f2 = exp(pw_costs_f2$fitted.values) - 2,
+         predicted_f3 = exp(pw_costs_f3$fitted.values) - 2,
+         predicted_f4 = exp(pw_costs_f4$fitted.values) - 2,
+         predicted_f5 = exp(pw_costs_f5$fitted.values) - 2,
+         predicted_f6 = exp(pw_costs_f6$fitted.values) - 2,
+         predicted_f7 = exp(pw_costs_f7$fitted.values) - 2,
+         predicted_ao_age = exp(pw_costs_ao_age$fitted.values) - 2)
+
+# Create a list to store results
+results_costs_age <- list()
+
+# Names of age groups
+age_groups_costs <- c("f1", "f2", "f3", "f4", "f5", "f6", "f7", "ao_age")
+
+# Calculate beta, standard error, and p-value for each age group
+for (age_group in age_groups_costs) {
+  model <- get(paste0("pw_costs_", age_group))
+  results_costs_age[[age_group]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each age group using beta coefficients
+apc_costs_age <- list()
+
+for (age_group in names(results_costs_age)) {
+  beta <- results_costs_age[[age_group]]$beta
+  apc_costs_age[[age_group]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_costs_age <- list()
+
+# Calculate upper and lower 95% CI for each age group
+for (age_group in names(results_costs_age)) {
+  beta <- results_costs_age[[age_group]]$beta
+  std_error <- results_costs_age[[age_group]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_costs_age[[age_group]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each age group
+R2_costs_age <- data.frame(
+  r2_f1 = calculate_r_squared(df_costs_age$f1, df_costs_age$predicted_f1),
+  r2_f2 = calculate_r_squared(df_costs_age$f2, df_costs_age$predicted_f2),
+  r2_f3 = calculate_r_squared(df_costs_age$f3, df_costs_age$predicted_f3),
+  r2_f4 = calculate_r_squared(df_costs_age$f4, df_costs_age$predicted_f4),
+  r2_f5 = calculate_r_squared(df_costs_age$f5, df_costs_age$predicted_f5),
+  r2_f6 = calculate_r_squared(df_costs_age$f6, df_costs_age$predicted_f6),
+  r2_f7 = calculate_r_squared(df_costs_age$f7, df_costs_age$predicted_f7),
+  r2_ao_age = calculate_r_squared(df_costs_age$ao_faixa, df_costs_age$predicted_ao_age)
+)
+
+# Results Table for Costs - Age Group
+# Category names for table display
+table_categories_costs_age <- c("0-9 years", "10-19 years", "20-29 years", "30-39 years",
+                                     "40-49 years", "50-59 years", "60+ years", "Western Amazon (Age Group)")
+
+# Extract APC values
+table_apcs_costs_age <- unlist(apc_costs_age)
+
+# Extract p-values (numeric)
+table_p_values_costs_age_numeric <- sapply(results_costs_age, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_costs_age_formatted <- character(length(table_categories_costs_age))
+
+for (i in seq_along(table_categories_costs_age)) {
+  p_val <- table_p_values_costs_age_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_costs_age_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_costs_age_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_costs_age_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_costs_age_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_costs_age_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_costs_age <- data.frame(
+  Category = table_categories_costs_age,
+  APC = table_apcs_costs_age,
+  `p-value` = table_p_values_costs_age_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_costs_age$APC <- round(table_costs_age$APC, 2)
+
+# Print the table
+print(table_costs_age)
+
+================================================================================
+# 4. Color/Race analysis (White, Black, Yellow, Brown, Indigenous, and Western Amazon)
+
+# Load Excel file - COSTS COLOR/RACE
+df_costs_color <- read_excel("costs_4_cor_z2.xlsx")
+
+# Transform cost units to a logarithmic scale
+df_costs_color <- df_costs_color %>%
+  mutate(white_log = log(branca),
+         black_log = log(preta),
+         yellow_log = log(amarela),
+         brown_log = log(parda),
+         indigenous_log = log(indigena),
+         ao_color_log = log(ao_cor))
+
+# Apply Prais-Winsten regression
+pw_costs_white <- prais_winsten(white_log ~ ano, data = df_costs_color, index = "ano")
+pw_costs_black <- prais_winsten(black_log ~ ano, data = df_costs_color, index = "ano")
+pw_costs_yellow <- prais_winsten(yellow_log ~ ano, data = df_costs_color, index = "ano")
+pw_costs_brown <- prais_winsten(brown_log ~ ano, data = df_costs_color, index = "ano")
+pw_costs_indigenous <- prais_winsten(indigenous_log ~ ano, data = df_costs_color, index = "ano")
+pw_costs_ao_color <- prais_winsten(ao_color_log ~ ano, data = df_costs_color, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_costs_color <- df_costs_color %>%
+  mutate(predicted_white = exp(pw_costs_white$fitted.values) - 2,
+         predicted_black = exp(pw_costs_black$fitted.values) - 2,
+         predicted_yellow = exp(pw_costs_yellow$fitted.values) - 2,
+         predicted_brown = exp(pw_costs_brown$fitted.values) - 2,
+         predicted_indigenous = exp(pw_costs_indigenous$fitted.values) - 2,
+         predicted_ao_color = exp(pw_costs_ao_color$fitted.values) - 2)
+
+# Create a list to store results
+results_costs_color <- list()
+
+# Names of colors/races
+colors_costs <- c("white", "black", "yellow", "brown", "indigenous", "ao_color")
+
+# Calculate beta, standard error, and p-value for each color/race
+for (color in colors_costs) {
+  model <- get(paste0("pw_costs_", color))
+  results_costs_color[[color]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each color/race using beta coefficients
+apc_costs_color <- list()
+
+for (color in names(results_costs_color)) {
+  beta <- results_costs_color[[color]]$beta
+  apc_costs_color[[color]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_costs_color <- list()
+
+# Calculate upper and lower 95% CI for each color/race
+for (color in names(results_costs_color)) {
+  beta <- results_costs_color[[color]]$beta
+  std_error <- results_costs_color[[color]]$std_error
+  
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  
+  IC95_costs_color[[color]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each color/race
+R2_costs_color <- data.frame(
+  r2_white = calculate_r_squared(df_costs_color$branca, df_costs_color$predicted_white),
+  r2_black = calculate_r_squared(df_costs_color$preta, df_costs_color$predicted_black),
+  r2_yellow = calculate_r_squared(df_costs_color$amarela, df_costs_color$predicted_yellow),
+  r2_brown = calculate_r_squared(df_costs_color$parda, df_costs_color$predicted_brown),
+  r2_indigenous = calculate_r_squared(df_costs_color$indigena, df_costs_color$predicted_indigenous),
+  r2_ao_color = calculate_r_squared(df_costs_color$ao_cor, df_costs_color$predicted_ao_color)
+)
+
+# Results Table for Costs - Color
+# Category names for table display
+table_categories_costs_color <- c("White", "Black", "Yellow", "Brown", "Indigenous", "Western Amazon (Color/Race)")
+
+# Extract APC values
+table_apcs_costs_color <- unlist(apc_costs_color)
+
+# Extract p-values (numeric)
+table_p_values_costs_color_numeric <- sapply(results_costs_color, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_costs_color_formatted <- character(length(table_categories_costs_color))
+
+for (i in seq_along(table_categories_costs_color)) {
+  p_val <- table_p_values_costs_color_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_costs_color_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_costs_color_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_costs_color_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_costs_color_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_costs_color_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_costs_color <- data.frame(
+  Category = table_categories_costs_color,
+  APC = table_apcs_costs_color,
+  `p-value` = table_p_values_costs_color_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_costs_color$APC <- round(table_costs_color$APC, 2)
+
+# Print the table
+print(table_costs_color)
+
+================================================================================
+- MORTALITY
+
+# 1. Regional analysis (Acre, Amazonas, Rondônia, Roraima, and Western Amazon)
+
+# Load Excel file
+df_mortality_reg <- read_excel("mortality_1_regional_z2.xlsx")
+
+# Transform death units to a logarithmic scale
+df_mortality_reg <- df_mortality_reg %>%
+  mutate(ac_log = log(ac),
+         am_log = log(am),
+         ro_log = log(ro),
+         rr_log = log(rr),
+         ao_log = log(ao))
+
+# Apply Prais-Winsten regression
+pw_mortality_ac <- prais_winsten(ac_log ~ ano, data = df_mortality_reg, index = "ano")
+pw_mortality_am <- prais_winsten(am_log ~ ano, data = df_mortality_reg, index = "ano")
+pw_mortality_ro <- prais_winsten(ro_log ~ ano, data = df_mortality_reg, index = "ano")
+pw_mortality_rr <- prais_winsten(rr_log ~ ano, data = df_mortality_reg, index = "ano")
+pw_mortality_ao <- prais_winsten(ao_log ~ ano, data = df_mortality_reg, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_mortality_reg <- df_mortality_reg %>%
+  mutate(predicted_ac = exp(pw_mortality_ac$fitted.values) - 2,
+         predicted_am = exp(pw_mortality_am$fitted.values) - 2,
+         predicted_ro = exp(pw_mortality_ro$fitted.values) - 2,
+         predicted_rr = exp(pw_mortality_rr$fitted.values) - 2,
+         predicted_ao = exp(pw_mortality_ao$fitted.values) - 2,
+         # CREATE UNIQUE NAME FOR FINAL COMPOSITE PLOT
+         predicted_ao_mortality = predicted_ao)
+
+# Create a list to store results
+results_mortality_reg <- list()
+
+# Names of regions
+regions_mortality <- c("ac", "am", "ro", "rr", "ao")
+
+# Calculate beta, standard error, and p-value for each region
+for (region in regions_mortality) {
+  model <- get(paste0("pw_mortality_", region))
+  results_mortality_reg[[region]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each region using beta coefficients
+apc_mortality_region <- list()
+
+for (region in names(results_mortality_reg)) {
+  beta <- results_mortality_reg[[region]]$beta
+  apc_mortality_region[[region]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_mortality_reg <- list()
+
+# Calculate upper and lower 95% CI for each region
+for (region in names(results_mortality_reg)) {
+  beta <- results_mortality_reg[[region]]$beta
+  std_error <- results_mortality_reg[[region]]$std_error
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  IC95_mortality_reg[[region]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each region
+R2_mortality_reg <- data.frame(
+  r2_ac = calculate_r_squared(df_mortality_reg$ac, df_mortality_reg$predicted_ac),
+  r2_am = calculate_r_squared(df_mortality_reg$am, df_mortality_reg$predicted_am),
+  r2_ro = calculate_r_squared(df_mortality_reg$ro, df_mortality_reg$predicted_ro),
+  r2_rr = calculate_r_squared(df_mortality_reg$rr, df_mortality_reg$predicted_rr),
+  r2_ao = calculate_r_squared(df_mortality_reg$ao, df_mortality_reg$predicted_ao)
+)
+
+# Results Table - Regional
+# Category names for table display
+table_categories_mortality_reg <- c("Acre", "Amazonas", "Rondônia", "Roraima", "Western Amazon")
+
+# Extract APC values
+table_apcs_mortality_reg <- unlist(apc_mortality_region)
+
+# Extract p-values (numeric)
+table_p_values_mortality_reg_numeric <- sapply(results_mortality_reg, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_mortality_reg_formatted <- character(length(table_categories_mortality_reg))
+
+for (i in seq_along(table_categories_mortality_reg)) {
+  p_val <- table_p_values_mortality_reg_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_mortality_reg_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_mortality_reg_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_mortality_reg_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_mortality_reg_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_mortality_reg_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_mortality_regional <- data.frame(
+  Category = table_categories_mortality_reg,
+  APC = table_apcs_mortality_reg,
+  `p-value` = table_p_values_mortality_reg_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_mortality_regional$APC <- round(table_mortality_regional$APC, 2)
+
+# Print the table
+print(table_mortality_regional)
+
+================================================================================
+# 2. Sex analysis (female, male, and Western Amazon)
+
+# Load Excel file (adjust path to your file)
+df_mortality_sex <- read_excel("mortality_2_sexo_z2.xlsx")
+
+# Transform death units to a logarithmic scale
+df_mortality_sex <- df_mortality_sex %>%
+  mutate(male_log = log(m),
+         female_log = log(f),
+         ao_sex_log = log(ao_sex))
+
+# Apply Prais-Winsten regression
+pw_mortality_male <- prais_winsten(male_log ~ ano, data = df_mortality_sex, index = "ano")
+pw_mortality_female <- prais_winsten(female_log ~ ano, data = df_mortality_sex, index = "ano")
+pw_mortality_ao_sex <- prais_winsten(ao_sex_log ~ ano, data = df_mortality_sex, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_mortality_sex <- df_mortality_sex %>%
+  mutate(predicted_male = exp(pw_mortality_male$fitted.values) - 2,
+         predicted_female = exp(pw_mortality_female$fitted.values) - 2,
+         predicted_ao_sex = exp(pw_mortality_ao_sex$fitted.values) - 2,
+         # CREATE UNIQUE NAME FOR FINAL COMPOSITE PLOT
+         predicted_ao_mortality = predicted_ao_sex)
+
+# Create a list to store results
+results_mortality_sex <- list()
+
+# Names of sexes
+sexes_mortality <- c("male", "female", "ao_sex")
+
+# Calculate beta, standard error, and p-value for each sex
+for (sex in sexes_mortality) {
+  model <- get(paste0("pw_mortality_", sex))
+  results_mortality_sex[[sex]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each sex using beta coefficients
+apc_mortality_sex <- list()
+
+for (sex in names(results_mortality_sex)) {
+  beta <- results_mortality_sex[[sex]]$beta
+  apc_mortality_sex[[sex]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_mortality_sex <- list()
+
+# Calculate upper and lower 95% CI for each sex
+for (sex in names(results_mortality_sex)) {
+  beta <- results_mortality_sex[[sex]]$beta
+  std_error <- results_mortality_sex[[sex]]$std_error
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  IC95_mortality_sex[[sex]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each sex
+R2_mortality_sex <- data.frame(
+  r2_male = calculate_r_squared(df_mortality_sex$m, df_mortality_sex$predicted_male),
+  r2_female = calculate_r_squared(df_mortality_sex$f, df_mortality_sex$predicted_female),
+  r2_ao_sex = calculate_r_squared(df_mortality_sex$ao_sex, df_mortality_sex$predicted_ao_sex)
+)
+
+# Results Table - Sex
+# Category names for table display
+table_categories_mortality_sex <- c("Male", "Female", "Western Amazon (Sex)")
+
+# Extract APC values
+table_apcs_mortality_sex <- unlist(apc_mortality_sex)
+
+# Extract p-values (numeric)
+table_p_values_mortality_sex_numeric <- sapply(results_mortality_sex, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_mortality_sex_formatted <- character(length(table_categories_mortality_sex))
+
+for (i in seq_along(table_categories_mortality_sex)) {
+  p_val <- table_p_values_mortality_sex_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_mortality_sex_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_mortality_sex_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_mortality_sex_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_mortality_sex_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_mortality_sex_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_mortality_sex <- data.frame(
+  Category = table_categories_mortality_sex,
+  APC = table_apcs_mortality_sex,
+  `p-value` = table_p_values_mortality_sex_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_mortality_sex$APC <- round(table_mortality_sex$APC, 2)
+
+# Print the table
+print(table_mortality_sex)
+
+==============================================================================
+# 3. Age group analysis [f1(0-9), f2(10-19), f3(20-29), f4(30-39), f5(40-49)
+# f6(50-59), f7(60-60+) and Western Amazon]
+
+# Load Excel file (adjust path to your file)
+df_mortality_age <- read_excel("mortality_3_faixa_z2.xlsx")
+
+# Transform death units to a logarithmic scale
+df_mortality_age <- df_mortality_age %>%
+  mutate(f1_log = log(f1),
+         f2_log = log(f2),
+         f3_log = log(f3),
+         f4_log = log(f4),
+         f5_log = log(f5),
+         f6_log = log(f6),
+         f7_log = log(f7),
+         ao_age_log = log(ao_faixa))
+
+# Apply Prais-Winsten regression
+pw_mortality_f1 <- prais_winsten(f1_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_f2 <- prais_winsten(f2_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_f3 <- prais_winsten(f3_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_f4 <- prais_winsten(f4_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_f5 <- prais_winsten(f5_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_f6 <- prais_winsten(f6_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_f7 <- prais_winsten(f7_log ~ ano, data = df_mortality_age, index = "ano")
+pw_mortality_ao_age <- prais_winsten(ao_age_log ~ ano, data = df_mortality_age, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_mortality_age <- df_mortality_age %>%
+  mutate(predicted_f1 = exp(pw_mortality_f1$fitted.values) - 2,
+         predicted_f2 = exp(pw_mortality_f2$fitted.values) - 2,
+         predicted_f3 = exp(pw_mortality_f3$fitted.values) - 2,
+         predicted_f4 = exp(pw_mortality_f4$fitted.values) - 2,
+         predicted_f5 = exp(pw_mortality_f5$fitted.values) - 2,
+         predicted_f6 = exp(pw_mortality_f6$fitted.values) - 2,
+         predicted_f7 = exp(pw_mortality_f7$fitted.values) - 2,
+         predicted_ao_age = exp(pw_mortality_ao_age$fitted.values) - 2,
+         # CREATE UNIQUE NAME FOR FINAL COMPOSITE PLOT
+         predicted_ao_mortality = predicted_ao_age)
+
+# Create a list to store results
+results_mortality_age <- list()
+
+# Names of age groups
+age_groups_mortality <- c("f1", "f2", "f3", "f4", "f5", "f6", "f7", "ao_faixa")
+
+# Calculate beta, standard error, and p-value for each age group
+for (age_group in age_groups_mortality) {
+  model <- get(paste0("pw_mortality_", age_group))
+  results_mortality_age[[age_group]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each age group using beta coefficients
+apc_mortality_age <- list()
+
+for (age_group in names(results_mortality_age)) {
+  beta <- results_mortality_age[[age_group]]$beta
+  apc_mortality_age[[age_group]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_mortality_age <- list()
+
+# Calculate upper and lower 95% CI for each age group
+for (age_group in names(results_mortality_age)) {
+  beta <- results_mortality_age[[age_group]]$beta
+  std_error <- results_mortality_age[[age_group]]$std_error
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  IC95_mortality_age[[age_group]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each age group
+R2_mortality_age <- data.frame(
+  r2_f1 = calculate_r_squared(df_mortality_age$f1, df_mortality_age$predicted_f1),
+  r2_f2 = calculate_r_squared(df_mortality_age$f2, df_mortality_age$predicted_f2),
+  r2_f3 = calculate_r_squared(df_mortality_age$f3, df_mortality_age$predicted_f3),
+  r2_f4 = calculate_r_squared(df_mortality_age$f4, df_mortality_age$predicted_f4),
+  r2_f5 = calculate_r_squared(df_mortality_age$f5, df_mortality_age$predicted_f5),
+  r2_f6 = calculate_r_squared(df_mortality_age$f6, df_mortality_age$predicted_f6),
+  r2_f7 = calculate_r_squared(df_mortality_age$f7, df_mortality_age$predicted_f7),
+  r2_ao_age = calculate_r_squared(df_mortality_age$ao_faixa, df_mortality_age$predicted_ao_age)
+)
+
+# Results Table - Age Group
+# Category names for table display
+table_categories_mortality_age <- c("0-9 years", "10-19 years", "20-29 years", "30-39 years",
+                                         "40-49 years", "50-59 years", "60+ years", "Western Amazon (Age Group)")
+
+# Extract APC values
+table_apcs_mortality_age <- unlist(apc_mortality_age)
+
+# Extract p-values (numeric)
+table_p_values_mortality_age_numeric <- sapply(results_mortality_age, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_mortality_age_formatted <- character(length(table_categories_mortality_age))
+
+for (i in seq_along(table_categories_mortality_age)) {
+  p_val <- table_p_values_mortality_age_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_mortality_age_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_mortality_age_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_mortality_age_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_mortality_age_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_mortality_age_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_mortality_age <- data.frame(
+  Category = table_categories_mortality_age,
+  APC = table_apcs_mortality_age,
+  `p-value` = table_p_values_mortality_age_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_mortality_age$APC <- round(table_mortality_age$APC, 2)
+
+# Print the table
+print(table_mortality_age)
+
+================================================================================
+# 4. Color/Race analysis (White, Black, Yellow, Brown, Indigenous, and Western Amazon)
+
+# Load Excel file (adjust path to your file)
+df_mortality_color <- read_excel("mortality_4_cor_z2.xlsx")
+
+# Transform death units to a logarithmic scale
+df_mortality_color <- df_mortality_color %>%
+  mutate(white_log = log(branca),
+         black_log = log(preta),
+         yellow_log = log(amarela),
+         brown_log = log(parda),
+         indigenous_log = log(indigena),
+         ao_color_log = log(ao_cor))
+
+# Apply Prais-Winsten regression
+pw_mortality_white <- prais_winsten(white_log ~ ano, data = df_mortality_color, index = "ano")
+pw_mortality_black <- prais_winsten(black_log ~ ano, data = df_mortality_color, index = "ano")
+pw_mortality_yellow <- prais_winsten(yellow_log ~ ano, data = df_mortality_color, index = "ano")
+pw_mortality_brown <- prais_winsten(brown_log ~ ano, data = df_mortality_color, index = "ano")
+pw_mortality_indigenous <- prais_winsten(indigenous_log ~ ano, data = df_mortality_color, index = "ano")
+pw_mortality_ao_color <- prais_winsten(ao_color_log ~ ano, data = df_mortality_color, index = "ano")
+
+# Extract predicted values (dependent variable = y)
+df_mortality_color <- df_mortality_color %>%
+  mutate(predicted_white = exp(pw_mortality_white$fitted.values) - 2,
+         predicted_black = exp(pw_mortality_black$fitted.values) - 2,
+         predicted_yellow = exp(pw_mortality_yellow$fitted.values) - 2,
+         predicted_brown = exp(pw_mortality_brown$fitted.values) - 2,
+         predicted_indigenous = exp(pw_mortality_indigena$fitted.values) - 2,
+         predicted_ao_color = exp(pw_mortality_ao_color$fitted.values) - 2,
+         # CREATE UNIQUE NAME FOR FINAL COMPOSITE PLOT
+         predicted_ao_mortality = predicted_ao_color)
+
+# Create a list to store results
+results_mortality_color <- list()
+
+# Names of colors/races
+colors_mortality <- c("white", "black", "yellow", "brown", "indigenous", "ao_color")
+
+# Calculate beta, standard error, and p-value for each color/race
+for (color in colors_mortality) {
+  model <- get(paste0("pw_mortality_", color))
+  results_mortality_color[[color]] <- list(
+    beta = coef(summary(model))["ano", "Estimate"],
+    std_error = coef(summary(model))["ano", "Std. Error"],
+    p_value = summary(model)$coefficients["ano", "Pr(>|t|)"]
+  )
+}
+
+# Calculate APC for each color/race using beta coefficients
+apc_mortality_color <- list()
+
+for (color in names(results_mortality_color)) {
+  beta <- results_mortality_color[[color]]$beta
+  apc_mortality_color[[color]] <- round((-1 + 10^(beta)) * 100, 2)
+}
+
+# Set critical t-value for 95% CI
+t_value <- 1.96
+
+# Initialize lists to store 95% CIs
+IC95_mortality_color <- list()
+
+# Calculate upper and lower 95% CI for each color/race
+for (color in names(results_mortality_color)) {
+  beta <- results_mortality_color[[color]]$beta
+  std_error <- results_mortality_color[[color]]$std_error
+  IC95_sup <- round((-1 + 10^(beta + t_value * std_error)) * 100, 2)
+  IC95_inf <- round((-1 + 10^(beta - t_value * std_error)) * 100, 2)
+  IC95_mortality_color[[color]] <- list(IC95_sup = IC95_sup, IC95_inf = IC95_inf)
+}
+
+# Function to calculate R²
+calculate_r_squared <- function(observed, predicted) {
+  valid_indices <- !is.na(observed) & !is.na(predicted)
+  observed <- observed[valid_indices]
+  predicted <- predicted[valid_indices]
+  
+  if(length(observed) < 2) {
+    return(NA)
+  }
+  
+  # Calculate Total Sum of Squares (SST)
+  mean_observed <- mean(observed)
+  SST <- sum((observed - mean_observed)^2)
+  
+  # Calculate Sum of Squared Errors (SSE)
+  SSE <- sum((observed - predicted)^2)
+  
+  # Calculate R²
+  R_squared <- 1 - (SSE / SST)
+  
+  return(R_squared)
+}
+
+# Apply R² function to each color/race
+R2_mortality_color <- data.frame(
+  r2_white = calculate_r_squared(df_mortality_color$branca, df_mortality_color$predicted_white),
+  r2_black = calculate_r_squared(df_mortality_color$preta, df_mortality_color$predicted_black),
+  r2_yellow = calculate_r_squared(df_mortality_color$amarela, df_mortality_color$predicted_yellow),
+  r2_brown = calculate_r_squared(df_mortality_color$parda, df_mortality_color$predicted_brown),
+  r2_indigenous = calculate_r_squared(df_mortality_color$indigena, df_mortality_color$predicted_indigenous),
+  r2_ao_color = calculate_r_squared(df_mortality_color$ao_cor, df_mortality_color$predicted_ao_color)
+)
+
+# Results Table - Color
+# Category names for table display
+table_categories_mortality_color <- c("White", "Black", "Yellow", "Brown", "Indigenous", "Western Amazon (Color/Race)")
+
+# Extract APC values
+table_apcs_mortality_color <- unlist(apc_mortality_color)
+
+# Extract p-values (numeric)
+table_p_values_mortality_color_numeric <- sapply(results_mortality_color, function(x) x$p_value)
+
+# Format p-values as strings
+table_p_values_mortality_color_formatted <- character(length(table_categories_mortality_color))
+
+for (i in seq_along(table_categories_mortality_color)) {
+  p_val <- table_p_values_mortality_color_numeric[i]
+  
+  if (is.na(p_val)) {
+    table_p_values_mortality_color_formatted[i] <- "NA"
+  } else if (p_val < 0.0001) {
+    table_p_values_mortality_color_formatted[i] <- "<0.0001"
+  } else if (p_val < 0.01) {
+    table_p_values_mortality_color_formatted[i] <- "<0.01"
+  } else if (p_val < 0.05) {
+    table_p_values_mortality_color_formatted[i] <- "<0.05"
+  } else {
+    table_p_values_mortality_color_formatted[i] <- ">0.05"
+  }
+}
+
+# Create the dataframe
+table_mortality_color <- data.frame(
+  Category = table_categories_mortality_color,
+  APC = table_apcs_mortality_color,
+  `p-value` = table_p_values_mortality_color_formatted,
+  check.names = FALSE
+)
+
+# Optional: Round APC for better visualization
+table_mortality_color$APC <- round(table_mortality_color$APC, 2)
+
+# Print the table
+print(table_mortality_color)
+
+================================================================================
+# Predicted Trends Plot
+
+# 1. Collect and COMBINE PREDICTED VALUES FOR WESTERN AMAZON
+data_ao_prevalence <- df_prevalence_reg %>%
+  select(year = ano, predicted_ao_prevalence)
+
+data_ao_costs <- df_costs_reg %>%
+  select(year = ano, predicted_ao_costs)
+
+data_ao_mortality <- df_mortality_reg %>%
+  select(year = ano, predicted_ao_mortality)
+
+# Join all data into a single dataframe by 'year'
+df_composite_ao <- data_ao_prevalence %>%
+  left_join(data_ao_costs, by = "year") %>%
+  left_join(data_ao_mortality, by = "year")
+
+# 2. Prepare data for the plot (long format)
+df_long_composite_ao <- df_composite_ao %>%
+  pivot_longer(
+    cols = c(predicted_ao_prevalence, predicted_ao_costs, predicted_ao_mortality),
+    names_to = "trend_type_raw",
+    values_to = "comparable_value_raw"
+  ) %>%
+  mutate(
+    # ENSURE LABELS ARE IN ENGLISH
+    trend_type = factor(trend_type_raw,
+                        levels = c("predicted_ao_prevalence", "predicted_ao_costs", "predicted_ao_mortality"),
+                        labels = c("Prevalence", "Hospitalization Costs", "Mortality"))
+  )
+
+# 3. Define colors and styles
+composite_colors <- c(
+  "Prevalence" = "black",
+  "Hospitalization Costs" = "lime green",
+  "Mortality" = "red"
+)
+
+composite_styles <- c(
+  "Prevalence" = "solid",
+  "Hospitalization Costs" = "solid",
+  "Mortality" = "solid"
+)
+
+# --- 4. CALCULATE REGRESSION EQUATIONS FOR THE PLOT (IN Z-SCORE vs YEAR PLANE) ---
+
+format_intercept <- function(intercept_val) {
+  if (intercept_val < 0) {
+    return(paste0(" - ", abs(round(intercept_val, 2))))
+  } else {
+    return(paste0(" + ", round(intercept_val, 2)))
+  }
+}
+
+model_prev_z <- lm(predicted_ao_prevalence ~ year, data = df_composite_ao)
+eq_prev <- paste0("Prevalence: y = ", round(coef(model_prev_z)["year"], 2), "x", format_intercept(coef(model_prev_z)["(Intercept)"]))
+
+model_costs_z <- lm(predicted_ao_costs ~ year, data = df_composite_ao)
+eq_costs <- paste0("Hospitalization Costs: y = ", round(coef(model_costs_z)["year"], 2), "x", format_intercept(coef(model_costs_z)["(Intercept)"]))
+
+model_mort_z <- lm(predicted_ao_mortality ~ year, data = df_composite_ao)
+eq_mort <- paste0("Mortality: y = ", round(coef(model_mort_z)["year"], 2), "x", format_intercept(coef(model_mort_z)["(Intercept)"]))
+
+# Create a dataframe for annotations
+anno_data <- data.frame(
+  year = rep(2023.1, 3),
+  y_pos_final = c(
+    tail(df_composite_ao$predicted_ao_mortality, 1),
+    tail(df_composite_ao$predicted_ao_costs, 1),
+    tail(df_composite_ao$predicted_ao_prevalence, 1)
+  ),
+  hjust_val = c(0, 0, 0),
+  vjust_val = c(0.5, 0.5, 0.5),
+  equation = c(eq_mort, eq_costs, eq_prev)
+)
+
+# 5. Create the plot
+composite_ao_plot <- ggplot(df_long_composite_ao, aes(x = year, y = comparable_value_raw, color = trend_type)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.5, shape = 16) +
+  geom_text(data = anno_data, aes(x = year, y = y_pos_final, label = equation),
+            hjust = 0,
+            size = 3.5,
+            color = "black") +
+  scale_color_manual(values = composite_colors, name = "Variable") +
+  labs(
+    x = "Year",
+    y = "Value (Z-score)",
+    title = ""
+  ) +
+  scale_x_continuous(breaks = seq(2012, 2023, by = 1), limits = c(2012, 2027)) +
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  theme_classic() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    legend.box.background = element_rect(color = "black", linewidth = 0.5),
+    axis.text = element_text(color = "black", size = 10),
+    axis.title = element_text(color = "black", size = 12),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+# Display the plot
+print(composite_ao_plot)
+
+# Save the plot (optional)
+ggsave("trends_plot.png", plot = composite_ao_plot, width = 12, height = 7, dpi = 300)
+
+================================================================================
+# Correlation between variables
+
+- MORTALITY
+
+# 1. Extract residuals from Prais-Winsten models for Western Amazon
+residuals_prevalence_ao <- data.frame(
+  year = pw_prevalence_ao$model$ano,
+  residuals_prev = as.numeric(pw_prevalence_ao$residuals)
+)
+
+residuals_costs_ao <- data.frame(
+  year = pw_costs_ao$model$ano,
+  residuals_costs = as.numeric(pw_costs_ao$residuals)
+)
+
+residuals_mortality_ao <- data.frame(
+  year = pw_mortality_ao$model$ano,
+  residuals_mort = as.numeric(pw_mortality_ao$residuals)
+)
+
+# 2. Join residuals into a single dataframe
+df_residuals_ao <- residuals_mortality_ao %>%
+  left_join(residuals_prevalence_ao, by = "year") %>%
+  left_join(residuals_costs_ao, by = "year") %>%
+  na.omit()
+
+# 3. Perform Multiple Regression on Residuals
+model_h2_ao_residuals <- lm(residuals_mort ~ residuals_prev + residuals_costs, data = df_residuals_ao)
+
+# 4. Display the Model Summary
+summary(model_h2_ao_residuals)
+
+# 5. Evaluate Direct Correlation between Residuals (complements H2)
+print("\n--- Residuals Correlation Matrix for Western Amazon ---")
+cor_matrix_residuals_ao <- cor(df_residuals_ao %>% select(residuals_mort, residuals_prev, residuals_costs))
+print(round(cor_matrix_residuals_ao, 4))
+
+================================================================================
+- PREVALENCE
+# Model: Prevalence = Mortality + Costs
+model_prev_h2 <- lm(residuals_prev ~ residuals_mort + residuals_costs, data = df_residuals_ao)
+
+# Display the Model Summary
+summary(model_prev_h2)
+
+================================================================================
+- COSTS
+
+# Model: Costs = Mortality + Prevalence
+model_costs_h2 <- lm(residuals_costs ~ residuals_mort + residuals_prev, data = df_residuals_ao)
+
+# Display the Model Summary
+summary(model_costs_h2)
+
+================================================================================
+- Western Amazon Map
+# Load state data for all of Brazil for the year 2020
+states <- read_state(year = 2020)
+
+# Filter for Western Amazon states
+western_amazon <- states %>%
+  filter(abbrev_state %in% c("AC", "AM", "RO", "RR"))
+
+# Gradient of green colors
+green_gradient_colors <- c(
+  "AC" = "#1E4D2B",
+  "AM" = "#3B873E",
+  "RO" = "#79C189",
+  "RR" = "#A8D5A9"
+)
+
+# Centroids (center points) of each state to position the abbreviations
+western_amazon_centroids <- western_amazon %>%
+  st_centroid() %>%
+  mutate(
+    lon = st_coordinates(.)[,1],
+    lat = st_coordinates(.)[,2]
+  )
+
+# Create the map with ggplot2
+ggplot() +
+  # Layer with the state polygons
+  geom_sf(data = western_amazon, aes(fill = abbrev_state), color = "white", linewidth = 0.5) +
+  # Define the custom color gradient palette
+  scale_fill_manual(values = green_gradient_colors) +
+  # Add state abbreviations to the center of each one
+  geom_text(data = western_amazon_centroids, aes(x = lon, y = lat, label = abbrev_state),
+            size = 5, fontface = "bold", color = "black") +
+  # Apply a cleaner visual theme
+  theme_minimal() +
+  # Define titles and labels
+  labs(
+    fill = "State",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  # Customize the appearance of plot texts
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text = element_text(size = 10, color = "black"),
+    axis.title = element_text(size = 12, face = "bold"),
+    legend.position = "none" # Legend disabled
+  ) +
+  # Ensure correct map projection
+  coord_sf()
+
+# Export the final map in high resolution (300 DPI)
+ggsave("western_amazon_gradient_map.png", width = 10, height = 8, dpi = 300)
+
+================================================================================
+
+# Package Citations
+citation("readxl")
+citation("dplyr")
+citation("prais")
+citation("ggplot2")
+citation("tidyr")
+citation("scales")
+citation("geobr")
+citation("sf")
+citation()
